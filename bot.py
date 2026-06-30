@@ -42,6 +42,15 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write("Bot ishlamoqda ✅".encode("utf-8"))
 
+    def do_HEAD(self):
+        # UptimeRobot va boshqa monitoring xizmatlari ko'pincha
+        # GET emas, HEAD so'rovi yuboradi. Agar bu metod bo'lmasa,
+        # BaseHTTPRequestHandler avtomatik 501 Not Implemented qaytaradi
+        # va monitor botni "Down" deb hisoblaydi.
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+
     def log_message(self, format, *args):
         pass  # Render loglarini health-check so'rovlari bilan to'ldirmaslik uchun
 
@@ -51,12 +60,15 @@ def run_health_server():
     logger.info(f"Health-check server {PORT}-portda ishga tushdi")
     server.serve_forever()
 
+
 MUSIC_KEYWORDS = ["music", "song", "audio", "musiqa", "track", "album", "official audio", "lyrics"]
+
 
 def is_music_likely(url: str, info: dict) -> bool:
     categories = info.get("categories", []) or []
     tags = info.get("tags", []) or []
     title = (info.get("title") or "").lower()
+
     if any(kw in title for kw in MUSIC_KEYWORDS):
         return True
     if "Music" in categories:
@@ -65,9 +77,11 @@ def is_music_likely(url: str, info: dict) -> bool:
         return True
     return False
 
+
 def detect_url(text: str):
     match = re.search(r'https?://[^\s]+', text)
     return match.group(0) if match else None
+
 
 def get_ydl_opts_base():
     return {
@@ -85,11 +99,14 @@ def get_ydl_opts_base():
             }
         },
     }
+
+
 def get_video_info(url: str) -> dict:
     opts = get_ydl_opts_base()
     opts["skip_download"] = True
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -99,9 +116,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 Faqat video havolasini yuboring!"
     )
 
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     url = detect_url(text)
+
     if not url:
         await update.message.reply_text("❌ Havola topilmadi.")
         return
@@ -163,6 +182,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(
             "❌ Bu havola ishlamadi yoki video mavjud emas.\nBoshqa havola yuborib ko'ring."
         )
+
 
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -257,16 +277,19 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Yuklab olishda xatolik.\nBoshqa sifat tanlang yoki qaytadan urinib ko'ring."
         )
 
+
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
     app.add_handler(CallbackQueryHandler(download_callback))
+
     logger.info("Bot ishga tushdi!")
     app.run_polling(drop_pending_updates=True)
 
+
 if __name__ == "__main__":
     main()
-
