@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 import logging
 import tempfile
@@ -28,6 +29,16 @@ if not TOKEN:
     )
 
 url_store = {}
+URL_STORE_TTL = 3600  # 1 soat — shu vaqtdan eski yozuvlar avtomatik tozalanadi
+
+
+def cleanup_url_store():
+    """Eski (foydalanilmagan) havolalarni url_store'dan tozalaydi,
+    aks holda bot uzoq ishlaganda xotira sekin to'lib boradi."""
+    now = time.time()
+    expired = [k for k, v in url_store.items() if now - v[1] > URL_STORE_TTL]
+    for k in expired:
+        url_store.pop(k, None)
 
 # Render Free Web Service portni tinglashni talab qiladi (health check uchun),
 # va UptimeRobot ham shu manzilga ping yuborib botni "uyg'oq" tutadi.
@@ -87,6 +98,9 @@ def get_ydl_opts_base():
     return {
         "quiet": True,
         "no_warnings": True,
+        # Faqat bitta video kerak — agar havolada playlist (list=...) bo'lsa ham,
+        # butun playlist emas, faqat shu video tekshiriladi/yuklanadi.
+        "noplaylist": True,
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -95,7 +109,9 @@ def get_ydl_opts_base():
         },
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android"],
+                # "ios" qo'shildi — YouTube "web" klientini bloklab qo'yganda
+                # ham bot ishlashda davom etadi.
+                "player_client": ["web", "android", "ios"],
             }
         },
     }
@@ -128,7 +144,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("⏳ Tekshirilmoqda...")
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         info = await loop.run_in_executor(None, get_video_info, url)
 
         title = info.get("title", "Noma'lum")
@@ -143,7 +159,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             duration_str = "Noma'lum"
 
         url_id = str(update.message.message_id)
-        url_store[url_id] = url
+        cleanup_url_store()
+        url_store[url_id] = (url, time.time())
 
         msg_text = (
             f"📹 *{title}*\n\n"
@@ -198,7 +215,8 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     dl_type, quality, url_id = parts
-    url = url_store.get(url_id)
+    entry = url_store.get(url_id)
+    url = entry[0] if entry else None
 
     if not url:
         await query.edit_message_text("❌ Havola topilmadi. Qaytadan yuboring.")
@@ -211,11 +229,17 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             output_path = os.path.join(tmpdir, "%(title)s.%(ext)s")
             base_opts = get_ydl_opts_base()
 
+            # 50MB dan katta bo'lishi aniq bilingan formatlar oldindan
+            # rad etiladi — shu bilan Render'ning cheklangan bepul resurslari
+            # behuda video yuklab, keyin o'chirib tashlamaydi.
+            max_size = 50 * 1024 * 1024
+
             if dl_type == "a":
                 ydl_opts = {
                     **base_opts,
                     "format": "bestaudio/best",
                     "outtmpl": output_path,
+                    "max_filesize": max_size,
                     "postprocessors": [{
                         "key": "FFmpegExtractAudio",
                         "preferredcodec": "mp3",
@@ -234,9 +258,10 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "format": fmt_map.get(quality, "best"),
                     "outtmpl": output_path,
                     "merge_output_format": "mp4",
+                    "max_filesize": max_size,
                 }
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
 
             files = list(Path(tmpdir).glob("*"))
